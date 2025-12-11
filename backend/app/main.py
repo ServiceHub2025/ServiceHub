@@ -62,6 +62,15 @@ async def health_check():
     }
 
 
-# TODO: Import and include routers from auth, providers, bookings, reviews, admin
+# Routers
+from app.providers import routes as provider_routes
+from app.bookings import routes as booking_routes
+from app.reviews import routes as review_routes
+
+app.include_router(provider_routes.router)
+app.include_router(booking_routes.router)
+app.include_router(review_routes.router)
+
+# TODO: Import and include routers from auth, admin
 # from app.auth import routes as auth_routes
 # app.include_router(auth_routes.router, prefix="/auth", tags=["Authentication"])
