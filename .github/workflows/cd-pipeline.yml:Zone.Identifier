@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://claude.ai/chat/c7978e28-b028-4266-9085-67d175d0710c
+HostUrl=https://claude.ai/api/organizations/a12426a6-47e1-498a-aa67-b529e06d5750/conversations/c7978e28-b028-4266-9085-67d175d0710c/wiggle/download-file?path=%2Fmnt%2Fuser-data%2Foutputs%2Fservicehub-complete-cicd.tar.gz
