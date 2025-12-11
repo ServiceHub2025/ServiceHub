@@ -257,14 +257,14 @@ servicehub/
 
 | Person | Role | Primary Responsibilities | Critical Path |
 |--------|------|--------------------------|---------------|
-| **Person A** | Backend Lead | Database schema, Auth system, Docker setup | ⚠️ BLOCKER: Everything depends on this |
-| **Person B** | Backend | Booking logic, Provider search, Reviews | Depends on Person A |
-| **Person C** | Frontend Lead | React setup, Auth UI, Routing | Depends on Person A |
-| **Person D** | Frontend | Provider search UI, Booking flow | Depends on Person C |
+| **Akash** | Backend Lead | Database schema, Auth system, Docker setup | ⚠️ BLOCKER: Everything depends on this |
+| **Kaushik** | Backend | Booking logic, Provider search, Reviews | Depends on Person A |
+| **Shriya** | Frontend Lead | React setup, Auth UI, Routing | Depends on Person A |
+| **Jyothsna** | Frontend | Provider search UI, Booking flow | Depends on Person C |
 
 ---
 
-### **Person A: Backend Lead** 🔵
+### **Akash: Backend Lead** 🔵
 
 **Owner**: Database, Authentication, Infrastructure
 
@@ -285,7 +285,7 @@ servicehub/
 
 ---
 
-### **Person B: Backend** 🟢
+### **Kaushik: Backend** 🟢
 
 **Owner**: Core Business Logic
 
@@ -307,7 +307,7 @@ servicehub/
 
 ---
 
-### **Person C: Frontend Lead** 🟡
+### **Shriya: Frontend Lead** 🟡
 
 **Owner**: React Architecture, Authentication Flow
 
@@ -332,7 +332,7 @@ servicehub/
 
 ---
 
-### **Person D: Frontend** 🟠
+### **Jyothsna: Frontend** 🟠
 
 **Owner**: Customer-Facing Features
 
@@ -443,11 +443,11 @@ servicehub/
 **All 4 meet for 30 minutes**
 
 **Test end-to-end flow**:
-1. Person D registers a customer via UI
+1. Akash registers a customer via UI
 2. Token appears in Network tab (DevTools)
-3. Person A verifies user in PostgreSQL
-4. Person C confirms AuthContext state updates
-5. Person B tests provider search via Postman
+3. Akash verifies user in PostgreSQL
+4. Shriya confirms AuthContext state updates
+5. Kaushik tests provider search via Postman
 
 **Fix any blockers before continuing**
 
@@ -457,13 +457,13 @@ servicehub/
 
 **Goal**: Build the demo-worthy booking flow
 
-#### **Person A Tasks** (3-4 hours)
+#### **Akash's Tasks** (3-4 hours)
 1. ✅ Admin endpoints for provider verification
 2. ✅ GET `/admin/providers/pending`
 3. ✅ PATCH `/admin/providers/:id/verify`
 4. ✅ Add CORS configuration for frontend
 
-#### **Person B Tasks** (6-8 hours)
+#### **Kaushik's Tasks** (6-8 hours)
 1. ✅ Booking state machine implementation
    - Valid transitions: `REQUESTED → ACCEPTED → IN_PROGRESS → COMPLETED`
    - Invalid transitions return `400`
@@ -472,13 +472,13 @@ servicehub/
 4. ✅ Review submission endpoint
 5. ✅ Automatic provider rating update on new review
 
-#### **Person C Tasks** (4-6 hours)
+#### **Shriya's Tasks** (4-6 hours)
 1. ✅ Admin dashboard for provider verification
 2. ✅ Pending providers table
 3. ✅ Approve/Reject buttons
 4. ✅ Toast notifications for success/error
 
-#### **Person D Tasks** (6-8 hours)
+#### **Jyothsna's Tasks** (6-8 hours)
 1. ✅ Provider search page with filters
    - Service dropdown (fetch from `/services`)
    - Location input (browser geolocation or manual)
@@ -575,132 +575,6 @@ servicehub/
 - [ ] Demo video (backup if live demo fails)
 - [ ] Presentation slides (10 slides max)
 
----
-
-## 💾 Database Schema
-
-### **Users Table**
-```sql
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    role VARCHAR(20) CHECK (role IN ('customer', 'provider', 'admin')),
-    name VARCHAR(100) NOT NULL,
-    phone VARCHAR(20),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### **Services Table**
-```sql
-CREATE TABLE services (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL,
-    description TEXT,
-    base_price DECIMAL(10, 2) NOT NULL,
-    active BOOLEAN DEFAULT true
-);
-```
-
-### **Service Providers Table**
-```sql
-CREATE TABLE service_providers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    service_id INT REFERENCES services(id),
-    hourly_rate DECIMAL(10, 2) NOT NULL,
-    location GEOGRAPHY(POINT, 4326) NOT NULL,  -- PostGIS
-    verified BOOLEAN DEFAULT false,
-    rating DECIMAL(3, 2) DEFAULT 0.0 CHECK (rating >= 0 AND rating <= 5)
-);
-
--- Critical index for distance queries
-CREATE INDEX idx_provider_location ON service_providers USING GIST(location);
-```
-
-### **Bookings Table**
-```sql
-CREATE TABLE bookings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_id UUID REFERENCES users(id),
-    provider_id UUID REFERENCES service_providers(id),
-    service_id INT REFERENCES services(id),
-    status VARCHAR(20) CHECK (status IN ('REQUESTED', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')),
-    scheduled_time TIMESTAMP NOT NULL,
-    hours INT CHECK (hours >= 1 AND hours <= 8),
-    total_amount DECIMAL(10, 2) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_bookings_customer ON bookings(customer_id);
-CREATE INDEX idx_bookings_provider ON bookings(provider_id);
-CREATE INDEX idx_bookings_status ON bookings(status);
-```
-
-### **Reviews Table**
-```sql
-CREATE TABLE reviews (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    booking_id UUID REFERENCES bookings(id) UNIQUE,  -- One review per booking
-    reviewer_id UUID REFERENCES users(id),
-    reviewee_id UUID REFERENCES users(id),
-    rating INT CHECK (rating >= 1 AND rating <= 5),
-    comment TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### **Relationships**
-- `users` 1:N `service_providers` (one user can be multiple providers)
-- `service_providers` M:N `services` (providers offer multiple services)
-- `bookings` M:1 `users` (customer)
-- `bookings` M:1 `service_providers`
-- `reviews` 1:1 `bookings` (one review per booking)
-
----
-
-## 🔌 API Endpoints
-
-### **Authentication**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/auth/register` | None | Create new account (customer/provider/admin) |
-| POST | `/auth/login` | None | Login and receive JWT token |
-
-### **Services**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/services` | None | List all active services |
-
-### **Providers**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/providers/search` | Optional | Search providers by location, service, radius |
-| POST | `/providers/register` | Required (User) | Register as a provider |
-| GET | `/providers/me` | Required (Provider) | Get provider dashboard data |
-
-### **Bookings**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/bookings` | Required (Customer) | Create new booking |
-| GET | `/bookings/me` | Required | Get user's bookings (customer or provider view) |
-| PATCH | `/bookings/:id/status` | Required | Update booking status (state machine) |
-| DELETE | `/bookings/:id` | Required (Customer) | Cancel booking (only if REQUESTED) |
-
-### **Reviews**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/reviews` | Required (Customer) | Submit review after completed booking |
-
-### **Admin**
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| GET | `/admin/providers/pending` | Required (Admin) | List unverified providers |
-| PATCH | `/admin/providers/:id/verify` | Required (Admin) | Approve/reject provider |
-
----
-
 ## 🚀 Setup Instructions
 
 ### **Prerequisites**
@@ -764,46 +638,20 @@ npm run dev
 # Frontend will be available at http://localhost:5173
 ```
 
-### **Environment Variables**
-
-**Backend (`.env`)**:
-```env
-# Database
-DATABASE_URL=postgresql://servicehub:password@localhost:5432/servicehub
-
-# JWT
-SECRET_KEY=your-256-bit-secret-key-here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_HOURS=24
-
-# Redis
-REDIS_URL=redis://localhost:6379/0
-
-# CORS
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
-```
-
-**Frontend (`.env`)**:
-```env
-VITE_API_BASE_URL=http://localhost:8000
-```
-
----
-
 ## 🔄 Development Workflow
 
 ### **Git Branching Strategy**
 
 ```
 main (protected)
-├── person-a-auth
-├── person-b-booking
-├── person-c-frontend-auth
-└── person-d-frontend-booking
+├── Akash-auth
+├── Kaushik-booking
+├── Shriya-frontend-auth
+└── Jyothsna-frontend-booking
 ```
 
 ### **Branch Naming Convention**
-- Feature: `person-{letter}-{feature-name}`
+- Feature: `{personName}-{feature-name}`
 - Bugfix: `bugfix-{description}`
 - Hotfix: `hotfix-{description}`
 
@@ -833,27 +681,6 @@ docs(readme): update setup instructions
 4. **Check CI/CD**: All checks must pass
 5. **Merge** after approval
 
-### **Daily Standup (15 min at hours 0, 8, 16)**
-
-**Format**:
-- What I completed since last standup
-- What I'm working on next
-- Any blockers
-
-**Example**:
-```
-Person A:
-✅ Completed: Database schema, auth endpoints
-🚧 Working on: Admin verification endpoints
-⚠️ Blocker: None
-
-Person B:
-✅ Completed: Waiting for auth system
-🚧 Working on: Provider search query
-⚠️ Blocker: Need auth middleware from Person A
-```
-
----
 
 ## 📊 Success Metrics
 
@@ -998,7 +825,10 @@ SELECT PostGIS_Version();
 
 ## 📞 Support & Contact
 
-- **Project Lead**: [Your Name] - [email@example.com]
+- **Project Lead**: Akash Deore -akashdeore1999@gmail.com
+- **Team Members**: Shriya Sharma 
+                    Kaushik Kumar
+                    Jyothsna Prakash
 - **Documentation**: [GitHub Wiki](https://github.com/your-org/servicehub/wiki)
 - **Issues**: [GitHub Issues](https://github.com/your-org/servicehub/issues)
 - **Slack**: #servicehub-dev
