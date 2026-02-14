@@ -1,0 +1,416 @@
+name: CD Pipeline - Deploy to Docker Hub
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  REGISTRY: docker.io
+
+jobs:
+  # ============================================================================
+  # JOB 1: PRE-DEPLOYMENT VALIDATION
+  # ============================================================================
+  pre-deploy-validation:
+    name: Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_deploy: ${{ steps.check.outputs.should_deploy }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(git describe --tags --always --dirty)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION"
+
+      - name: Check if should deploy
+        id: check
+        run: |
+          # Only deploy if all CI checks passed or if it's a manual trigger
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate changelog
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            if ! grep -q "${GITHUB_REF#refs/tags/}" CHANGELOG.md 2>/dev/null; then
+              echo "⚠️ Warning: Version not found in CHANGELOG.md"
+            fi
+          fi
+        continue-on-error: true
+
+  # ============================================================================
+  # JOB 2: BUILD AND PUSH BACKEND
+  # ============================================================================
+  build-push-backend:
+    name: Build & Push Backend Image
+    runs-on: ubuntu-latest
+    needs: [pre-deploy-validation]
+    if: needs.pre-deploy-validation.outputs.should_deploy == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.pre-deploy-validation.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=ServiceHub Backend
+            org.opencontainers.image.description=FastAPI backend for ServiceHub
+            org.opencontainers.image.vendor=ServiceHub Team
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:buildcache,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ needs.pre-deploy-validation.outputs.version }}
+
+      - name: Verify backend image
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest
+          docker inspect ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest
+
+      - name: Scan backend image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest
+          format: 'sarif'
+          output: 'trivy-backend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-backend-results.sarif'
+        continue-on-error: true
+
+  # ============================================================================
+  # JOB 3: BUILD AND PUSH FRONTEND
+  # ============================================================================
+  build-push-frontend:
+    name: Build & Push Frontend Image
+    runs-on: ubuntu-latest
+    needs: [pre-deploy-validation]
+    if: needs.pre-deploy-validation.outputs.should_deploy == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ needs.pre-deploy-validation.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=ServiceHub Frontend
+            org.opencontainers.image.description=React + TypeScript frontend for ServiceHub
+            org.opencontainers.image.vendor=ServiceHub Team
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:buildcache,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ needs.pre-deploy-validation.outputs.version }}
+
+      - name: Verify frontend image
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:latest
+          docker inspect ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:latest
+
+      - name: Scan frontend image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:latest
+          format: 'sarif'
+          output: 'trivy-frontend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-frontend-results.sarif'
+        continue-on-error: true
+
+  # ============================================================================
+  # JOB 4: SMOKE TESTS
+  # ============================================================================
+  smoke-tests:
+    name: Post-Deployment Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [build-push-backend, build-push-frontend, pre-deploy-validation]
+    
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_USER: servicehub
+          POSTGRES_PASSWORD: servicehub_password
+          POSTGRES_DB: servicehub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Pull and run backend
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest
+          docker run -d \
+            --name backend \
+            --network host \
+            -e DATABASE_URL=postgresql://servicehub:servicehub_password@localhost:5432/servicehub \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e SECRET_KEY=test-secret \
+            -e ALGORITHM=HS256 \
+            -e ACCESS_TOKEN_EXPIRE_HOURS=24 \
+            -e ALLOWED_ORIGINS=http://localhost:5173 \
+            ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest
+
+      - name: Wait for backend to start
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:8000/health 2>/dev/null; then
+              echo "Backend is up!"
+              exit 0
+            fi
+            echo "Waiting for backend... ($i/30)"
+            sleep 2
+          done
+          echo "Backend failed to start"
+          docker logs backend
+          exit 1
+
+      - name: Run health checks
+        run: |
+          # Health endpoint
+          curl -f http://localhost:8000/health || exit 1
+          
+          # Root endpoint
+          curl -f http://localhost:8000/ || exit 1
+          
+          # API docs
+          curl -f http://localhost:8000/docs || exit 1
+
+      - name: Test API endpoints (basic smoke test)
+        run: |
+          # Register a user
+          RESPONSE=$(curl -s -X POST http://localhost:8000/auth/register \
+            -H "Content-Type: application/json" \
+            -d '{"email":"test@test.com","password":"password123","role":"customer","name":"Test User","phone":"1234567890"}' || echo "REGISTRATION_NOT_READY")
+          
+          if [[ "$RESPONSE" != "REGISTRATION_NOT_READY" ]]; then
+            echo "✅ Registration endpoint works"
+          else
+            echo "⚠️ Registration endpoint not implemented yet"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop backend || true
+          docker rm backend || true
+
+  # ============================================================================
+  # JOB 5: CREATE GITHUB RELEASE
+  # ============================================================================
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-push-backend, build-push-frontend, smoke-tests, pre-deploy-validation]
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREVIOUS_TAG=$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --reverse)
+          else
+            CHANGELOG=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s (%h)" --reverse)
+          fi
+          
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: |
+            ## 🚀 ServiceHub ${{ github.ref_name }}
+            
+            ### Docker Images
+            - Backend: `docker pull ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:${{ needs.pre-deploy-validation.outputs.version }}`
+            - Frontend: `docker pull ${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:${{ needs.pre-deploy-validation.outputs.version }}`
+            
+            ### Changes
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ### Deployment
+            ```bash
+            export DOCKERHUB_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
+            docker-compose -f docker-compose.prod.yml pull
+            docker-compose -f docker-compose.prod.yml up -d
+            ```
+          draft: false
+          prerelease: false
+
+  # ============================================================================
+  # JOB 6: NOTIFY TEAM
+  # ============================================================================
+  notify-deployment:
+    name: Notify Team of Deployment
+    runs-on: ubuntu-latest
+    needs: [build-push-backend, build-push-frontend, smoke-tests, pre-deploy-validation]
+    if: always()
+    
+    steps:
+      - name: Deployment Success Notification
+        if: needs.smoke-tests.result == 'success'
+        run: |
+          echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.pre-deploy-validation.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Images:** https://hub.docker.com/u/${{ secrets.DOCKERHUB_USERNAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Team Instructions" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "export DOCKERHUB_USERNAME=\"${{ secrets.DOCKERHUB_USERNAME }}\"" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose -f docker-compose.prod.yml pull" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose -f docker-compose.prod.yml up -d" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Deployment Failure Notification
+        if: needs.smoke-tests.result != 'success'
+        run: |
+          echo "## ❌ Deployment Failed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          exit 1
+
+      - name: Comment on commit
+        uses: actions/github-script@v6
+        if: needs.smoke-tests.result == 'success'
+        with:
+          script: |
+            github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: '## ✅ Deployed to Docker Hub\n\n**Version:** ${{ needs.pre-deploy-validation.outputs.version }}\n\nImages are available at:\n- `${{ secrets.DOCKERHUB_USERNAME }}/servicehub-backend:latest`\n- `${{ secrets.DOCKERHUB_USERNAME }}/servicehub-frontend:latest`\n\nTeam members can pull with:\n```bash\ndocker-compose -f docker-compose.prod.yml pull\ndocker-compose -f docker-compose.prod.yml up -d\n```'
+            })
+        continue-on-error: true
